@@ -2,7 +2,7 @@ const SpatialGrid = require('./SpatialGrid');
 const {
   CHUNK_SIZE, PLANETS_PER_CHUNK, TICK_MS, PLANET_MIN_DISTANCE,
   PLANET_TYPES, START_MINERALS, START_ENERGY, SHIP_TYPES, VIEW_RADIUS,
-  COMBAT_RANGE, COLONY_SHIP_COST, DEFENSE_UPGRADE_COST,
+  FOG_RADIUS, COMBAT_RANGE, COLONY_SHIP_COST, DEFENSE_UPGRADE_COST,
   DEFENSE_DAMAGE_PER_LEVEL, DEFENSE_HP_PER_LEVEL,
 } = require('./constants');
 
@@ -738,14 +738,20 @@ class GameWorld {
   }
 
   // ── state sync ───────────────────────────────────────────
-  getFullState() {
+  getFullState(socketId) {
+    // Use fog of war for initial state
+    const fogPlanets = socketId ? this._computeFogVisibility(socketId) : new Set(this.planets.keys());
+
     const planets = [];
-    for (const p of this.planets.values()) {
-      planets.push({
-        id: p.id, x: p.x, y: p.y, type: p.type, name: p.name,
-        ownerId: p.ownerId, ownerUserId: p.ownerUserId, ownerUsername: p.ownerUsername,
-        defenseLevel: p.defenseLevel, garrison: { ...p.garrison }, isHome: p.isHome,
-      });
+    for (const id of fogPlanets) {
+      const p = this.planets.get(id);
+      if (p) {
+        planets.push({
+          id: p.id, x: p.x, y: p.y, type: p.type, name: p.name,
+          ownerId: p.ownerId, ownerUserId: p.ownerUserId, ownerUsername: p.ownerUsername,
+          defenseLevel: p.defenseLevel, garrison: { ...p.garrison }, isHome: p.isHome,
+        });
+      }
     }
 
     const fleets = [];
@@ -776,50 +782,97 @@ class GameWorld {
     return { planets, fleets, players, ownerCache };
   }
 
+  /** Compute which planet IDs are visible to a player via fog of war */
+  _computeFogVisibility(socketId) {
+    const visible = new Set();
+    const ownedPlanets = [];
+
+    // Always include player's own planets
+    for (const planet of this.planets.values()) {
+      if (planet.ownerId === socketId) {
+        visible.add(planet.id);
+        ownedPlanets.push(planet);
+      }
+    }
+
+    // Planets within FOG_RADIUS of each owned planet
+    for (const owned of ownedPlanets) {
+      const nearby = this.spatialGrid.query(owned.x, owned.y, FOG_RADIUS);
+      for (const id of nearby) {
+        const p = this.planets.get(id);
+        if (p && dist(p, owned) < FOG_RADIUS) {
+          visible.add(id);
+        }
+      }
+    }
+
+    // Planets within FOG_RADIUS of each owned fleet
+    for (const fleet of this.fleets.values()) {
+      if (fleet.ownerId === socketId) {
+        const nearby = this.spatialGrid.query(fleet.x, fleet.y, FOG_RADIUS);
+        for (const id of nearby) {
+          const p = this.planets.get(id);
+          if (p && dist(p, { x: fleet.x, y: fleet.y }) < FOG_RADIUS) {
+            visible.add(id);
+          }
+        }
+        // Fleet's own position is also a visibility source for its destination area
+        // (already covered by the fleet position query above)
+      }
+    }
+
+    // Also include dirty planets owned by this player (under attack etc)
+    for (const id of this.dirtyPlanets) {
+      const p = this.planets.get(id);
+      if (p && (p.ownerId === socketId || p.ownerUserId === this.players.get(socketId)?.userId)) {
+        visible.add(id);
+      }
+    }
+
+    return visible;
+  }
+
   getVisibleState(socketId) {
     const player = this.players.get(socketId);
     if (!player) return null;
 
     const cx = player.viewX;
     const cy = player.viewY;
-    const radius = VIEW_RADIUS;
 
-    const visibleIds = this.spatialGrid.query(cx, cy, radius);
+    // Fog of war: which planets can the player see?
+    const fogPlanets = this._computeFogVisibility(socketId);
 
-    const included = new Set();
     const planets = [];
-
-    for (const id of visibleIds) {
+    for (const id of fogPlanets) {
       const p = this.planets.get(id);
-      if (p && dist(p, { x: cx, y: cy }) < radius + 100) {
-        included.add(id);
+      if (p) {
         planets.push({
           id: p.id, x: p.x, y: p.y, type: p.type, name: p.name,
           ownerId: p.ownerId, ownerUserId: p.ownerUserId, ownerUsername: p.ownerUsername,
           defenseLevel: p.defenseLevel, isHome: p.isHome,
-          garrison: { ...p.garrison }, // show garrison info for all
+          garrison: { ...p.garrison },
         });
       }
     }
 
-    for (const id of this.dirtyPlanets) {
-      if (!included.has(id)) {
-        const p = this.planets.get(id);
-        if (p) {
-          planets.push({
-            id: p.id, x: p.x, y: p.y, type: p.type, name: p.name,
-            ownerId: p.ownerId, ownerUserId: p.ownerUserId, ownerUsername: p.ownerUsername,
-            defenseLevel: p.defenseLevel, isHome: p.isHome,
-            garrison: { ...p.garrison },
-          });
-        }
+    // Fleets: show player's own fleets everywhere + enemy fleets in viewport
+    const visibleIds = this.spatialGrid.query(cx, cy, VIEW_RADIUS);
+    const fleets = [];
+    // Player's own fleets always visible
+    for (const f of this.fleets.values()) {
+      if (f.ownerId === socketId) {
+        fleets.push({
+          id: f.id, ownerId: f.ownerId, ownerUsername: player.username,
+          x: f.x, y: f.y, destX: f.destX, destY: f.destY, ships: { ...f.ships },
+          angle: f.angle, fromPlanetId: f.fromPlanetId, toPlanetId: f.toPlanetId,
+          fromPlanetName: f.fromPlanetName, toPlanetName: f.toPlanetName,
+        });
       }
     }
-
-    const fleets = [];
+    // Enemy fleets in viewport
     for (const id of visibleIds) {
       const f = this.fleets.get(id);
-      if (f && dist(f, { x: cx, y: cy }) < radius + 100) {
+      if (f && f.ownerId !== socketId && dist(f, { x: cx, y: cy }) < VIEW_RADIUS + 100) {
         const fowner = this.players.get(f.ownerId);
         fleets.push({
           id: f.id, ownerId: f.ownerId, ownerUsername: fowner?.username || f.ownerUsername || null,

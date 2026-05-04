@@ -42,6 +42,7 @@ const DEFENSE_HP_PER_LEVEL = 100;
 
 // Viewport culling — how far (in world units) a client can see
 const VIEW_RADIUS = 800;
+const FOG_RADIUS = 700; // fog of war: planets visible within this range of owned planets/fleets
 
 // Fleet combat happens when two hostile fleets are within this range
 const COMBAT_RANGE = 30;
@@ -67,6 +68,7 @@ module.exports = {
   DEFENSE_DAMAGE_PER_LEVEL,
   DEFENSE_HP_PER_LEVEL,
   VIEW_RADIUS,
+  FOG_RADIUS,
   COMBAT_RANGE,
   SAVE_INTERVAL,
 };

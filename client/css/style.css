@@ -135,6 +135,35 @@ body {
 }
 #chat-input:focus { border-color: #3498db; }
 
+/* Quick-select owned planets */
+#planet-quick-select {
+  position: fixed; left: 8px; top: 50%;
+  transform: translateY(-50%);
+  width: 160px; max-height: 50vh;
+  background: rgba(0,0,0,0.75);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 8px; padding: 8px;
+  z-index: 10;
+  overflow-y: auto;
+}
+#planet-quick-select h4 {
+  text-align: center; color: #f39c12; margin-bottom: 6px; font-size: 12px;
+}
+#quick-list { display: flex; flex-direction: column; gap: 3px; }
+.quick-item {
+  padding: 5px 8px;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 4px;
+  cursor: pointer; font-size: 11px;
+  transition: background 0.15s;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.quick-item:hover { background: rgba(255,255,255,0.15); }
+.quick-item.selected { border-color: #3498db; background: rgba(52,152,219,0.2); }
+.quick-item .qname { color: #ddd; font-weight: bold; }
+.quick-item .qinfo { color: #888; font-size: 10px; }
+
 #minimap {
   position: fixed; right: 8px; bottom: 8px;
   border: 2px solid rgba(255,255,255,0.2);

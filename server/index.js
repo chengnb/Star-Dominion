@@ -157,7 +157,7 @@ async function _spawnPlayer(socket) {
   world.restoreOwnership(socket.id, socket.userId);
 
   socket.emit('game:init', {
-    worldState: world.getFullState(),
+    worldState: world.getFullState(socket.id),
     myState: {
       minerals: player.minerals,
       energy: player.energy,

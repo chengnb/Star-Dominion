@@ -43,6 +43,7 @@ class StarGame {
     this.hoveredPlanetId = null;
     this.hoveredFleetId = null;
     this._lastSelectedPlanetId = null;
+    this._lastQuickIds = ''; // track owned planet IDs for minimal DOM updates
 
     // UI
     this.leaderboard = [];
@@ -65,6 +66,20 @@ class StarGame {
       e.stopPropagation();
       this.selectedPlanetId = null;
       document.getElementById('planet-panel').classList.add('hidden');
+    });
+
+    // Event delegation for quick-select (bound once)
+    document.getElementById('quick-list').addEventListener('click', (e) => {
+      const item = e.target.closest('.quick-item');
+      if (!item) return;
+      const pid = parseInt(item.dataset.pid);
+      const planet = this.planets.get(pid);
+      if (planet) {
+        this.selectedPlanetId = pid;
+        this.camera.x = planet.x;
+        this.camera.y = planet.y;
+        this._updatePlanetPanel();
+      }
     });
 
     // Bind input events
@@ -128,12 +143,21 @@ class StarGame {
   }
 
   onUpdate(data) {
+    // Fog of war: track which planets are currently visible
+    const activePlanetIds = new Set();
     for (const p of data.planets) {
+      activePlanetIds.add(p.id);
       const existing = this.planets.get(p.id);
       if (existing) {
         Object.assign(existing, p);
       } else {
         this.planets.set(p.id, p);
+      }
+    }
+    // Remove planets that fell out of fog range (but keep own planets)
+    for (const [id, p] of this.planets) {
+      if (!activePlanetIds.has(id) && p.ownerId !== socket.id) {
+        this.planets.delete(id);
       }
     }
 
@@ -191,6 +215,50 @@ class StarGame {
     }
     document.getElementById('res-planets').textContent = planetCount;
     this._refreshPlanetPanel();
+    this._refreshQuickSelect();
+  }
+
+  _refreshQuickSelect() {
+    const list = document.getElementById('quick-list');
+    const myPlanets = [];
+    for (const p of this.planets.values()) {
+      if (p.ownerId === socket.id) myPlanets.push(p);
+    }
+    myPlanets.sort((a, b) => (b.isHome ? 1 : 0) - (a.isHome ? 1 : 0) || a.id - b.id);
+
+    // Build a fingerprint of planet IDs to detect changes
+    const idKey = myPlanets.map(p => p.id).join(',');
+
+    // Full rebuild only when planet list actually changes
+    if (idKey !== this._lastQuickIds) {
+      this._lastQuickIds = idKey;
+      list.innerHTML = myPlanets.map(p => {
+        const typeDef = PLANET_TYPES[p.type] || { name: '?' };
+        const sel = p.id === this.selectedPlanetId ? ' selected' : '';
+        return `<div class="quick-item${sel}" data-pid="${p.id}">
+          <span class="qname">${this._esc(p.name || typeDef.name)}${p.isHome ? '⭐' : ''}</span>
+          <span class="qinfo" id="qi-${p.id}"></span>
+        </div>`;
+      }).join('');
+    }
+
+    // Per-tick: update text content and selected state only
+    for (const item of list.children) {
+      const pid = parseInt(item.dataset.pid);
+      const p = this.planets.get(pid);
+      if (!p) continue;
+
+      // Update selected class
+      const isSel = pid === this.selectedPlanetId;
+      item.classList.toggle('selected', isSel);
+
+      // Update info text
+      const infoEl = item.querySelector('.qinfo');
+      if (infoEl && p.garrison) {
+        const g = p.garrison;
+        infoEl.textContent = `防${p.defenseLevel} 侦${g.scout||0}战${g.fighter||0}列${g.battleship||0}`;
+      }
+    }
   }
 
   _updateWorldBounds() {
