@@ -7,12 +7,14 @@ const socket = io({
   reconnectionAttempts: 20,
 });
 
-// ── Auth UI ──────────────────────────────────────────────
+// ── Auth UI ────────────────────────────────────────────────
 const authOverlay = document.getElementById('auth-overlay');
 const authForm = document.getElementById('auth-form');
 const authError = document.getElementById('auth-error');
 const authSubmit = document.getElementById('auth-submit');
 const authTabs = document.querySelectorAll('.auth-tab');
+const gameUI = document.getElementById('game-ui');
+const logoutBtn = document.getElementById('logout-btn');
 let authMode = 'login';
 
 authTabs.forEach(tab => {
@@ -47,16 +49,21 @@ authForm.addEventListener('submit', (e) => {
   });
 });
 
-// ── Socket events ────────────────────────────────────────
+// ── Logout ─────────────────────────────────────────────────
+logoutBtn.addEventListener('click', () => {
+  socket.emit('auth:logout');
+});
+
+// ── Socket events ──────────────────────────────────────────
 let game = null;
 
 socket.on('connect', () => {
-  // If we have a token, try token auth
   if (localStorage.getItem('sd_token')) {
     socket.emit('auth:token', {}, (result) => {
       if (!result.success) {
         localStorage.removeItem('sd_token');
         authOverlay.classList.remove('hidden');
+        gameUI.classList.add('hidden');
       }
     });
   }
@@ -65,7 +72,7 @@ socket.on('connect', () => {
 socket.on('game:init', (data) => {
   console.log('Game initialized', data);
   authOverlay.classList.add('hidden');
-  document.getElementById('game-ui').classList.remove('hidden');
+  gameUI.classList.remove('hidden');
   document.getElementById('player-name').textContent = socket.username || '';
   if (!game) {
     game = new StarGame(data);
@@ -86,7 +93,30 @@ socket.on('chat:broadcast', (msg) => {
   if (game) game.onChatMessage(msg);
 });
 
-// ── Chat input ───────────────────────────────────────────
+// Kicked by server (single-session enforcement)
+socket.on('auth:kicked', (data) => {
+  localStorage.removeItem('sd_token');
+  if (game) {
+    game.destroy();
+    game = null;
+  }
+  gameUI.classList.add('hidden');
+  authOverlay.classList.remove('hidden');
+  authError.textContent = data.reason || '账号在其他地方登录';
+});
+
+// Logged out
+socket.on('auth:loggedOut', () => {
+  localStorage.removeItem('sd_token');
+  if (game) {
+    game.destroy();
+    game = null;
+  }
+  gameUI.classList.add('hidden');
+  authOverlay.classList.remove('hidden');
+});
+
+// ── Chat input ─────────────────────────────────────────────
 const chatInput = document.getElementById('chat-input');
 chatInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {

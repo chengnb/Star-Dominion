@@ -1,6 +1,6 @@
-// Game world dimensions
-const WORLD_WIDTH = 5000;
-const WORLD_HEIGHT = 5000;
+// Chunk system — world is infinite, divided into chunks
+const CHUNK_SIZE = 2000; // each chunk is 2000×2000 world units
+const PLANETS_PER_CHUNK = 10; // target planets per chunk
 
 // Spatial grid cell size — cells this size form the culling grid
 const CELL_SIZE = 500;
@@ -10,7 +10,6 @@ const TICK_RATE = 20;
 const TICK_MS = 1000 / TICK_RATE;
 
 // Planet generation
-const PLANET_COUNT = 150;
 const PLANET_MIN_DISTANCE = 150; // minimum distance between planets
 const PLANET_RADIUS = 20; // visual radius
 
@@ -51,12 +50,11 @@ const COMBAT_RANGE = 30;
 const SAVE_INTERVAL = 30000; // every 30 seconds
 
 module.exports = {
-  WORLD_WIDTH,
-  WORLD_HEIGHT,
+  CHUNK_SIZE,
+  PLANETS_PER_CHUNK,
   CELL_SIZE,
   TICK_RATE,
   TICK_MS,
-  PLANET_COUNT,
   PLANET_MIN_DISTANCE,
   PLANET_RADIUS,
   PLANET_TYPES,

@@ -15,12 +15,12 @@ class StarGame {
     this.minimapCanvas = document.getElementById('minimap');
     this.minimapCtx = this.minimapCanvas.getContext('2d');
 
-    // World state
+    // World state — infinite, no fixed bounds
     this.planets = new Map();
     this.fleets = new Map();
     this.players = new Map();
-    this.worldWidth = 5000;
-    this.worldHeight = 5000;
+    this.ownerCache = new Map();  // userId → { username, color } for offline owners
+    this.worldBounds = null;
 
     // My state
     this.myState = { minerals: 0, energy: 0 };
@@ -29,8 +29,11 @@ class StarGame {
     this.selectedPlanetId = null;
 
     // Camera
-    this.camera = { x: 2500, y: 2500, zoom: 1 };
+    this.camera = { x: 0, y: 0, zoom: 1 };
     this.targetZoom = 1;
+
+    // Minimap scale (dynamic, based on camera zoom)
+    this.minimapRange = 3000;
 
     // Mouse
     this.mouse = { x: 0, y: 0, worldX: 0, worldY: 0 };
@@ -38,6 +41,7 @@ class StarGame {
     this.dragStart = { x: 0, y: 0 };
     this.dragCamStart = { x: 0, y: 0 };
     this.hoveredPlanetId = null;
+    this.hoveredFleetId = null;
     this._lastSelectedPlanetId = null;
 
     // UI
@@ -75,13 +79,17 @@ class StarGame {
     this._render();
   }
 
-  // ── data handlers ──────────────────────────────────────
+  // ── cleanup ──────────────────────────────────────────────
+  destroy() {
+    this._destroyed = true;
+    window.removeEventListener('resize', () => this._resize());
+  }
+
+  // ── data handlers ────────────────────────────────────────
   onInit(data) {
-    this.worldWidth = data.worldState.worldWidth;
-    this.worldHeight = data.worldState.worldHeight;
-    this.myState = data.myState;
     this.homePlanetId = data.homePlanetId;
     this.myColor = data.color;
+    this.myState = data.myState;
 
     this.planets.clear();
     for (const p of data.worldState.planets) {
@@ -95,6 +103,18 @@ class StarGame {
     for (const p of data.worldState.players) {
       this.players.set(p.socketId, p);
     }
+    this.ownerCache.clear();
+    if (data.worldState.ownerCache) {
+      for (const o of data.worldState.ownerCache) {
+        this.ownerCache.set(o.userId, { username: o.username, color: o.color });
+      }
+    }
+    // Also cache online players
+    for (const p of data.worldState.players) {
+      this.ownerCache.set(p.userId || p.socketId, { username: p.username, color: p.color });
+    }
+
+    this._updateWorldBounds();
 
     // Center camera on home planet
     const home = this.planets.get(this.homePlanetId);
@@ -108,14 +128,15 @@ class StarGame {
   }
 
   onUpdate(data) {
-    // Update planets
     for (const p of data.planets) {
       const existing = this.planets.get(p.id);
       if (existing) {
         Object.assign(existing, p);
+      } else {
+        this.planets.set(p.id, p);
       }
     }
-    // Update fleets
+
     const activeFleetIds = new Set();
     for (const f of data.fleets) {
       activeFleetIds.add(f.id);
@@ -126,15 +147,15 @@ class StarGame {
         this.fleets.set(f.id, f);
       }
     }
-    // Remove stale fleets
     for (const [id] of this.fleets) {
       if (!activeFleetIds.has(id)) this.fleets.delete(id);
     }
-    // Update my state
+
     if (data.myState) {
       this.myState = data.myState;
     }
 
+    this._updateWorldBounds();
     this._updateHUD();
     this._drawMinimap();
   }
@@ -150,16 +171,17 @@ class StarGame {
 
   onChatMessage(msg) {
     this.chatMessages.push(msg);
-    if (this.chatMessages.length > 50) this.chatMessages.shift();
+    if (this.chatMessages.length > 100) this.chatMessages.shift();
     const container = document.getElementById('chat-messages');
     const div = document.createElement('div');
-    div.className = 'chat-msg';
-    div.innerHTML = `<span class="name">${this._esc(msg.username)}:</span> ${this._esc(msg.text)}`;
+    div.className = 'chat-msg' + (msg.isSystem ? ' system' : '');
+    const nameClass = msg.isSystem ? 'sysname' : 'name';
+    div.innerHTML = `<span class="${nameClass}">${this._esc(msg.username)}:</span> ${this._esc(msg.text)}`;
     container.appendChild(div);
     container.scrollTop = container.scrollHeight;
   }
 
-  // ── HUD ────────────────────────────────────────────────
+  // ── HUD ──────────────────────────────────────────────────
   _updateHUD() {
     document.getElementById('res-minerals').textContent = Math.floor(this.myState.minerals);
     document.getElementById('res-energy').textContent = Math.floor(this.myState.energy);
@@ -169,6 +191,21 @@ class StarGame {
     }
     document.getElementById('res-planets').textContent = planetCount;
     this._refreshPlanetPanel();
+  }
+
+  _updateWorldBounds() {
+    if (this.planets.size === 0) return;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const p of this.planets.values()) {
+      if (p.x < minX) minX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y > maxY) maxY = p.y;
+    }
+    this.worldBounds = { minX, minY, maxX, maxY };
+    // Auto-adjust minimap range
+    const span = Math.max(maxX - minX, maxY - minY, 2000);
+    this.minimapRange = Math.max(span * 0.6, 3000);
   }
 
   /** Full rebuild — only called when selected planet changes */
@@ -185,18 +222,18 @@ class StarGame {
 
     const typeDef = PLANET_TYPES[planet.type] || { name: '未知' };
     const isMine = planet.ownerId === socket.id;
-    const owner = this.players.get(planet.ownerId);
-    const ownerName = owner ? owner.username : (planet.ownerId ? '未知' : '无');
+    const owner = this._getOwnerInfo(planet.ownerId, planet.ownerUserId, planet.ownerUsername);
+    const ownerName = owner ? owner.username : '中立';
+    const offlineTag = owner && !owner.online ? ' [离线]' : '';
 
     document.getElementById('panel-planet-name').textContent =
-      `${typeDef.name} ${isMine ? '(我的)' : ''} ${planet.isHome ? '⭐母星' : ''}`;
+      `${planet.name || typeDef.name} ${typeDef.name} ${isMine ? '(我的)' : ''} ${planet.isHome ? '⭐母星' : ''}`;
 
     let info = `类型: ${typeDef.name}<br>`;
-    info += `拥有者: <span style="color:${owner ? owner.color : '#888'}">${ownerName}</span><br>`;
+    info += `拥有者: <span style="color:${owner ? owner.color : '#888'}">${ownerName}${offlineTag}</span><br>`;
     info += `防御等级: <span id="panel-defense">${planet.defenseLevel}</span><br>`;
-    if (planet.garrison) {
-      info += `<span id="panel-garrison">驻军: 侦察机${planet.garrison.scout || 0} 战斗机${planet.garrison.fighter || 0} 战列舰${planet.garrison.battleship || 0}</span>`;
-    }
+    const g = planet.garrison || {};
+    info += `<span id="panel-garrison">驻军: 侦察机${g.scout || 0} 战斗机${g.fighter || 0} 战列舰${g.battleship || 0}</span>`;
     document.getElementById('panel-info').innerHTML = info;
 
     let actions = '';
@@ -209,25 +246,21 @@ class StarGame {
     document.getElementById('panel-actions').innerHTML = actions;
   }
 
-  /** Lightweight refresh — called every tick, only updates text & disabled states */
   _refreshPlanetPanel() {
     const planet = this.planets.get(this.selectedPlanetId);
     if (!planet) return;
 
-    // Update garrison text
     const garrisonEl = document.getElementById('panel-garrison');
     if (garrisonEl && planet.garrison) {
       const g = planet.garrison;
       garrisonEl.textContent = `驻军: 侦察机${g.scout || 0} 战斗机${g.fighter || 0} 战列舰${g.battleship || 0}`;
     }
 
-    // Update defense level
     const defEl = document.getElementById('panel-defense');
     if (defEl) {
       defEl.textContent = planet.defenseLevel;
     }
 
-    // Update button disabled states based on current resources
     const costs = {
       build_scout: { m: 50, e: 30 },
       build_fighter: { m: 100, e: 50 },
@@ -244,11 +277,7 @@ class StarGame {
 
   _handleAction(action) {
     const planet = this.planets.get(this.selectedPlanetId);
-    if (!planet || planet.ownerId !== socket.id) {
-      console.warn('[build] Cannot build: planet not owned or not selected');
-      return;
-    }
-    console.log('[build] Sending command:', action, 'planet:', planet.id);
+    if (!planet || planet.ownerId !== socket.id) return;
     switch (action) {
       case 'build_scout':
         socket.emit('game:command', { type: 'build_ship', planetId: planet.id, shipType: 'scout' });
@@ -265,7 +294,7 @@ class StarGame {
     }
   }
 
-  // ── events ─────────────────────────────────────────────
+  // ── events ───────────────────────────────────────────────
   _bindEvents() {
     this.canvas.addEventListener('mousedown', (e) => this._onMouseDown(e));
     this.canvas.addEventListener('mousemove', (e) => this._onMouseMove(e));
@@ -291,20 +320,17 @@ class StarGame {
     this.mouse.worldY = world.y;
 
     if (e.button === 0) {
-      // Left click: check if clicking a planet
       const clicked = this._findPlanetAt(world.x, world.y);
       if (clicked) {
         this.selectedPlanetId = clicked.id;
         this._updatePlanetPanel();
       }
-      // Start drag
       this.dragging = true;
       this.dragStart = { x: this.mouse.x, y: this.mouse.y };
       this.dragCamStart = { x: this.camera.x, y: this.camera.y };
     }
 
     if (e.button === 2) {
-      // Right click: send fleet from selected planet to clicked planet
       const clicked = this._findPlanetAt(world.x, world.y);
       if (clicked && this.selectedPlanetId && this.selectedPlanetId !== clicked.id) {
         const source = this.planets.get(this.selectedPlanetId);
@@ -317,7 +343,6 @@ class StarGame {
               toPlanetId: clicked.id,
               ships: { scout: ships.scout || 0, fighter: ships.fighter || 0, battleship: ships.battleship || 0 },
             });
-            // Optimistically clear garrison (server update will confirm)
             source.garrison = { scout: 0, fighter: 0, battleship: 0 };
             this._updateHUD();
           }
@@ -339,14 +364,13 @@ class StarGame {
       const dy = this.mouse.y - this.dragStart.y;
       this.camera.x = this.dragCamStart.x - dx / this.camera.zoom;
       this.camera.y = this.dragCamStart.y - dy / this.camera.zoom;
-      this._clampCamera();
     }
 
-    // Hover detection
-    this.hoveredPlanetId = this._findPlanetAt(world.x, world.y)?.id || null;
-    this.canvas.classList.toggle('pointing', !!this.hoveredPlanetId);
+    const hoveredPlanet = this._findPlanetAt(world.x, world.y);
+    this.hoveredPlanetId = hoveredPlanet?.id || null;
+    this.hoveredFleetId = hoveredPlanet ? null : (this._findFleetAt(world.x, world.y)?.id || null);
+    this.canvas.classList.toggle('pointing', !!(this.hoveredPlanetId || this.hoveredFleetId));
 
-    // Send view position to server periodically
     if (this._lastViewSend && Date.now() - this._lastViewSend < 500) return;
     this._lastViewSend = Date.now();
     socket.volatile.emit('game:command', {
@@ -369,7 +393,6 @@ class StarGame {
   _onKeyDown(e) {
     switch (e.key.toLowerCase()) {
       case 'h':
-        // Go home
         const home = this.planets.get(this.homePlanetId);
         if (home) {
           this.camera.x = home.x;
@@ -401,24 +424,33 @@ class StarGame {
     return closest;
   }
 
-  _clampCamera() {
-    // Allow some overshoot
-    const pad = 200;
-    this.camera.x = Math.max(-pad, Math.min(this.worldWidth + pad, this.camera.x));
-    this.camera.y = Math.max(-pad, Math.min(this.worldHeight + pad, this.camera.y));
+  _findFleetAt(wx, wy) {
+    const threshold = 16 / this.camera.zoom;
+    let closest = null;
+    let closestDist = threshold;
+    for (const f of this.fleets.values()) {
+      const dx = f.x - wx;
+      const dy = f.y - wy;
+      const d = Math.sqrt(dx * dx + dy * dy);
+      if (d < closestDist) {
+        closestDist = d;
+        closest = f;
+      }
+    }
+    return closest;
   }
 
-  // ── resize ─────────────────────────────────────────────
+  // ── resize ───────────────────────────────────────────────
   _resize() {
     this.canvas.width = window.innerWidth;
     this.canvas.height = window.innerHeight;
   }
 
-  // ── render ─────────────────────────────────────────────
+  // ── render ───────────────────────────────────────────────
   _render() {
+    if (this._destroyed) return;
     requestAnimationFrame(() => this._render());
 
-    // Smooth zoom
     this.camera.zoom += (this.targetZoom - this.camera.zoom) * 0.15;
 
     const ctx = this.ctx;
@@ -428,7 +460,6 @@ class StarGame {
 
     ctx.clearRect(0, 0, w, h);
 
-    // Draw starfield background (parallax)
     this._drawStarfield(ctx, w, h);
 
     ctx.save();
@@ -436,10 +467,10 @@ class StarGame {
     ctx.scale(cam.zoom, cam.zoom);
     ctx.translate(-cam.x, -cam.y);
 
-    // Grid (subtle)
+    // Grid (infinite, centered on camera)
     this._drawGrid(ctx);
 
-    // Planet connections for own planets
+    // Planet connections
     this._drawConnections(ctx);
 
     // Planets
@@ -472,60 +503,112 @@ class StarGame {
 
     ctx.restore();
 
-    // Hover tooltip
+    // Hover tooltip — planet or fleet
     if (this.hoveredPlanetId) {
       const hp = this.planets.get(this.hoveredPlanetId);
       if (hp) {
         const typeDef = PLANET_TYPES[hp.type] || { name: '未知' };
-        const owner = this.players.get(hp.ownerId);
-        const ownerName = owner ? owner.username : (hp.ownerId ? '未知' : '中立');
-        ctx.fillStyle = 'rgba(0,0,0,0.8)';
-        ctx.fillRect(this.mouse.x + 16, this.mouse.y - 8, 120, 20);
+        const owner = this._getOwnerInfo(hp.ownerId, hp.ownerUserId, hp.ownerUsername);
+        const ownerName = owner ? owner.username : '中立';
+        const g = hp.garrison || {};
+        const garText = `驻军: 侦${g.scout||0} 战${g.fighter||0} 列${g.battleship||0}`;
+        const defText = `防御: Lv${hp.defenseLevel||0}`;
+        const text = `${hp.name || typeDef.name} | ${ownerName} | ${defText} | ${garText}`;
+        ctx.fillStyle = 'rgba(0,0,0,0.85)';
+        const tw = ctx.measureText(text).width;
+        ctx.fillRect(this.mouse.x + 16, this.mouse.y - 10, tw + 16, 22);
         ctx.fillStyle = '#fff';
         ctx.font = '12px "Microsoft YaHei", sans-serif';
-        ctx.fillText(`${typeDef.name} - ${ownerName}`, this.mouse.x + 20, this.mouse.y + 6);
+        ctx.fillText(text, this.mouse.x + 24, this.mouse.y + 6);
+      }
+    } else if (this.hoveredFleetId) {
+      const hf = this.fleets.get(this.hoveredFleetId);
+      if (hf) {
+        const owner = this._getOwnerInfo(hf.ownerId, null, hf.ownerUsername);
+        const ownerName = owner ? owner.username : '未知';
+        const s = hf.ships;
+        const shipText = `侦${s.scout||0} 战${s.fighter||0} 列${s.battleship||0}`;
+        const destName = hf.toPlanetName || `#${hf.toPlanetId}`;
+        const text = `舰队 [${ownerName}] ${shipText} → ${destName}`;
+        ctx.fillStyle = 'rgba(0,0,0,0.85)';
+        const tw = ctx.measureText(text).width;
+        ctx.fillRect(this.mouse.x + 16, this.mouse.y - 10, tw + 16, 22);
+        ctx.fillStyle = '#fff';
+        ctx.font = '12px "Microsoft YaHei", sans-serif';
+        ctx.fillText(text, this.mouse.x + 24, this.mouse.y + 6);
       }
     }
   }
 
   _drawStarfield(ctx, w, h) {
     for (const star of this.stars) {
-      const sx = (star.x - this.camera.x * 0.3) % w;
-      const sy = (star.y - this.camera.y * 0.3) % h;
-      const x = ((sx % w) + w) % w;
-      const y = ((sy % h) + h) % h;
+      const sx = (star.x - this.camera.x * 0.3 + w * 10) % w;
+      const sy = (star.y - this.camera.y * 0.3 + h * 10) % h;
       ctx.fillStyle = star.brightness;
       ctx.beginPath();
-      ctx.arc(x, y, star.size, 0, Math.PI * 2);
+      ctx.arc(sx, sy, star.size, 0, Math.PI * 2);
       ctx.fill();
     }
   }
 
   _drawGrid(ctx) {
     const step = 200;
+    const vw = this.canvas.width / this.camera.zoom;
+    const vh = this.canvas.height / this.camera.zoom;
+    const x0 = Math.floor((this.camera.x - vw / 2) / step) * step;
+    const y0 = Math.floor((this.camera.y - vh / 2) / step) * step;
+    const x1 = this.camera.x + vw / 2 + step;
+    const y1 = this.camera.y + vh / 2 + step;
+
+    // Subtle grid
     ctx.strokeStyle = 'rgba(255,255,255,0.03)';
     ctx.lineWidth = 1 / this.camera.zoom;
-
-    const x0 = Math.floor((this.camera.x - this.canvas.width / this.camera.zoom) / step) * step;
-    const y0 = Math.floor((this.camera.y - this.canvas.height / this.camera.zoom) / step) * step;
-
     ctx.beginPath();
-    for (let x = x0; x < this.camera.x + this.canvas.width / this.camera.zoom + step; x += step) {
-      if (x < 0 || x > this.worldWidth) continue;
-      ctx.moveTo(x, Math.max(0, y0));
-      ctx.lineTo(x, Math.min(this.worldHeight, y0 + this.canvas.height / this.camera.zoom + step));
+    for (let x = x0; x < x1; x += step) {
+      ctx.moveTo(x, y0);
+      ctx.lineTo(x, y1);
     }
-    for (let y = y0; y < this.camera.y + this.canvas.height / this.camera.zoom + step; y += step) {
-      if (y < 0 || y > this.worldHeight) continue;
-      ctx.moveTo(Math.max(0, x0), y);
-      ctx.lineTo(Math.min(this.worldWidth, x0 + this.canvas.width / this.camera.zoom + step), y);
+    for (let y = y0; y < y1; y += step) {
+      ctx.moveTo(x0, y);
+      ctx.lineTo(x1, y);
     }
     ctx.stroke();
 
-    // World border
-    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
-    ctx.lineWidth = 2 / this.camera.zoom;
-    ctx.strokeRect(0, 0, this.worldWidth, this.worldHeight);
+    // Chunk boundaries — prominent lines with labels
+    const CHUNK = 2000;
+    const cx0 = Math.floor((this.camera.x - vw / 2) / CHUNK) * CHUNK;
+    const cy0 = Math.floor((this.camera.y - vh / 2) / CHUNK) * CHUNK;
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+    ctx.lineWidth = 2.5 / this.camera.zoom;
+    ctx.setLineDash([14 / this.camera.zoom, 6 / this.camera.zoom]);
+    ctx.beginPath();
+    for (let x = cx0; x < x1; x += CHUNK) {
+      ctx.moveTo(x, y0);
+      ctx.lineTo(x, y1);
+    }
+    for (let y = cy0; y < y1; y += CHUNK) {
+      ctx.moveTo(x0, y);
+      ctx.lineTo(x1, y);
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Chunk coordinate labels — only when zoomed in enough
+    if (this.camera.zoom > 0.4) {
+      ctx.fillStyle = 'rgba(255,255,255,0.3)';
+      const labelSize = Math.min(16, Math.max(10, 12 / this.camera.zoom));
+      ctx.font = `${labelSize}px "Microsoft YaHei", sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      for (let x = cx0; x < x1; x += CHUNK) {
+        for (let y = cy0; y < y1; y += CHUNK) {
+          const clx = Math.floor(x / CHUNK);
+          const cly = Math.floor(y / CHUNK);
+          ctx.fillText(`[${clx},${cly}]`, x + CHUNK / 2, y + CHUNK / 2);
+        }
+      }
+    }
   }
 
   _drawConnections(ctx) {
@@ -552,7 +635,7 @@ class StarGame {
 
   _drawPlanet(ctx, planet) {
     const typeDef = PLANET_TYPES[planet.type] || { color: '#888' };
-    const owner = this.players.get(planet.ownerId);
+    const owner = this._getOwnerInfo(planet.ownerId, planet.ownerUserId, planet.ownerUsername);
     const color = owner ? owner.color : '#666';
     const radius = 16 + planet.defenseLevel * 2;
 
@@ -591,12 +674,12 @@ class StarGame {
       ctx.fillText('⭐', planet.x, planet.y - radius - 8 / this.camera.zoom);
     }
 
-    // Name label (only when zoomed in enough)
+    // Name label
     if (this.camera.zoom > 0.6) {
       ctx.fillStyle = '#ddd';
       ctx.font = `${11 / this.camera.zoom}px "Microsoft YaHei", sans-serif`;
       ctx.textAlign = 'center';
-      const label = typeDef.name;
+      const label = planet.name || typeDef.name;
       ctx.fillText(label, planet.x, planet.y + radius + 14 / this.camera.zoom);
     }
 
@@ -619,10 +702,19 @@ class StarGame {
     const total = (ships.scout || 0) + (ships.fighter || 0) + (ships.battleship || 0);
     if (total === 0) return;
 
-    const owner = this.players.get(fleet.ownerId);
+    const owner = this._getOwnerInfo(fleet.ownerId, null, fleet.ownerUsername);
     const color = owner ? owner.color : '#999';
 
-    // Draw triangle in fleet direction
+    // Dashed line to destination
+    ctx.strokeStyle = color + '66';
+    ctx.lineWidth = 1.2 / this.camera.zoom;
+    ctx.setLineDash([5 / this.camera.zoom, 4 / this.camera.zoom]);
+    ctx.beginPath();
+    ctx.moveTo(fleet.x, fleet.y);
+    ctx.lineTo(fleet.destX, fleet.destY);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
     const size = 6 + Math.min(total, 20) * 1.2;
     const angle = fleet.angle || 0;
 
@@ -632,7 +724,7 @@ class StarGame {
 
     ctx.fillStyle = color;
     ctx.strokeStyle = '#fff';
-    ctx.lineWidth = 1 / this.camera.zoom;
+    ctx.lineWidth = 1.2 / this.camera.zoom;
     ctx.beginPath();
     ctx.moveTo(size, 0);
     ctx.lineTo(-size * 0.7, -size * 0.6);
@@ -645,35 +737,43 @@ class StarGame {
 
     // Ship count label
     ctx.fillStyle = '#fff';
-    ctx.font = `${9 / this.camera.zoom}px sans-serif`;
+    ctx.font = `bold ${Math.max(7, 10 / this.camera.zoom)}px sans-serif`;
     ctx.textAlign = 'center';
-    ctx.fillText(total, fleet.x, fleet.y - size - 6 / this.camera.zoom);
+    ctx.fillText(total, fleet.x, fleet.y - size - 8 / this.camera.zoom);
   }
 
-  // ── minimap ────────────────────────────────────────────
+  // ── minimap (dynamic for infinite world) ──────────────────
   _drawMinimap() {
     const mc = this.minimapCtx;
     const mw = this.minimapCanvas.width;
     const mh = this.minimapCanvas.height;
-    const scaleX = mw / this.worldWidth;
-    const scaleY = mh / this.worldHeight;
 
     mc.clearRect(0, 0, mw, mh);
     mc.fillStyle = 'rgba(0,0,0,0.8)';
     mc.fillRect(0, 0, mw, mh);
 
-    // Planets
+    // Show a region around the camera
+    const range = this.minimapRange;
+    const scaleX = mw / (range * 2);
+    const scaleY = mh / (range * 2);
+    const centerX = this.camera.x;
+    const centerY = this.camera.y;
+
+    // Planets within minimap range
     for (const p of this.planets.values()) {
-      const owner = this.players.get(p.ownerId);
+      const rx = (p.x - centerX) * scaleX + mw / 2;
+      const ry = (p.y - centerY) * scaleY + mh / 2;
+      if (rx < -2 || rx > mw + 2 || ry < -2 || ry > mh + 2) continue;
+      const owner = this._getOwnerInfo(p.ownerId, p.ownerUserId, p.ownerUsername);
       mc.fillStyle = owner ? owner.color : '#444';
-      mc.fillRect(p.x * scaleX - 1, p.y * scaleY - 1, 2, 2);
+      mc.fillRect(rx - 1, ry - 1, 2, 2);
     }
 
     // Viewport rectangle
     const vw = this.canvas.width / this.camera.zoom;
     const vh = this.canvas.height / this.camera.zoom;
-    const vx = (this.camera.x - vw / 2) * scaleX;
-    const vy = (this.camera.y - vh / 2) * scaleY;
+    const vx = (-vw / 2) * scaleX + mw / 2;
+    const vy = (-vh / 2) * scaleY + mh / 2;
     mc.strokeStyle = '#fff';
     mc.lineWidth = 1;
     mc.strokeRect(vx, vy, vw * scaleX, vh * scaleY);
@@ -681,12 +781,14 @@ class StarGame {
     // Home planet
     const home = this.planets.get(this.homePlanetId);
     if (home) {
+      const hx = (home.x - centerX) * scaleX + mw / 2;
+      const hy = (home.y - centerY) * scaleY + mh / 2;
       mc.fillStyle = '#f1c40f';
-      mc.fillRect(home.x * scaleX - 2, home.y * scaleY - 2, 4, 4);
+      mc.fillRect(hx - 2, hy - 2, 4, 4);
     }
   }
 
-  // ── helpers ────────────────────────────────────────────
+  // ── helpers ──────────────────────────────────────────────
   _generateStars(count) {
     const stars = [];
     for (let i = 0; i < count; i++) {
@@ -715,6 +817,25 @@ class StarGame {
     const g = Math.min(255, ((num >> 8) & 0x00FF) + 60);
     const b = Math.min(255, (num & 0x0000FF) + 60);
     return `rgb(${r},${g},${b})`;
+  }
+
+  /** Get display info for planet/fleet owner (online or offline) */
+  _getOwnerInfo(ownerId, ownerUserId, ownerUsername) {
+    // Check online players first
+    if (ownerId) {
+      const online = this.players.get(ownerId);
+      if (online) return { username: online.username, color: online.color, online: true };
+    }
+    // Check owner cache (offline)
+    if (ownerUserId) {
+      const cached = this.ownerCache.get(ownerUserId);
+      if (cached) return { username: cached.username, color: cached.color, online: false };
+    }
+    // Fallback to stored username
+    if (ownerUsername) {
+      return { username: ownerUsername, color: '#666', online: false };
+    }
+    return null;
   }
 
   _esc(str) {
