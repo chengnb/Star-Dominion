@@ -1,0 +1,161 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: #000;
+  overflow: hidden;
+  font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  color: #ccc;
+  user-select: none;
+}
+
+#game-canvas {
+  position: fixed;
+  top: 0; left: 0;
+  width: 100vw; height: 100vh;
+  cursor: grab;
+}
+#game-canvas:active { cursor: grabbing; }
+#game-canvas.pointing { cursor: pointer; }
+
+/* ── Auth Overlay ──────────────────────── */
+#auth-overlay {
+  position: fixed; inset: 0;
+  background: radial-gradient(ellipse at center, #0a0a2e 0%, #000 70%);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 1000;
+}
+#auth-box {
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 12px;
+  padding: 40px;
+  width: 360px;
+  text-align: center;
+  backdrop-filter: blur(10px);
+}
+#auth-box h1 {
+  font-size: 28px;
+  color: #fff;
+  margin-bottom: 4px;
+  letter-spacing: 4px;
+}
+.subtitle {
+  font-size: 12px;
+  color: #888;
+  margin-bottom: 24px;
+}
+#auth-tabs {
+  display: flex; gap: 0; margin-bottom: 20px;
+}
+.auth-tab {
+  flex: 1; padding: 8px;
+  background: transparent; border: 1px solid rgba(255,255,255,0.2);
+  color: #aaa; cursor: pointer; font-size: 14px;
+}
+.auth-tab:first-child { border-radius: 4px 0 0 4px; }
+.auth-tab:last-child { border-radius: 0 4px 4px 0; }
+.auth-tab.active { background: rgba(52,152,219,0.3); color: #fff; border-color: #3498db; }
+
+#auth-form input {
+  display: block; width: 100%; padding: 10px 12px;
+  margin-bottom: 10px;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 6px; color: #fff; font-size: 14px;
+  outline: none;
+}
+#auth-form input:focus { border-color: #3498db; }
+#auth-submit {
+  width: 100%; padding: 10px;
+  background: #3498db; border: none; border-radius: 6px;
+  color: #fff; font-size: 16px; cursor: pointer;
+  margin-top: 4px;
+}
+#auth-submit:hover { background: #2980b9; }
+#auth-error { color: #e74c3c; font-size: 13px; margin-top: 10px; min-height: 20px; }
+
+/* ── Game UI ──────────────────────────── */
+.hidden { display: none !important; }
+
+#top-bar {
+  position: fixed; top: 0; left: 0; right: 0;
+  height: 40px;
+  background: rgba(0,0,0,0.7);
+  display: flex; align-items: center; gap: 24px;
+  padding: 0 16px; z-index: 10;
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+}
+.resource { font-size: 14px; color: #ddd; }
+.res-icon { margin-right: 2px; }
+#player-name { margin-left: auto; color: #3498db; font-weight: bold; }
+
+#leaderboard {
+  position: fixed; right: 8px; top: 48px;
+  width: 180px;
+  background: rgba(0,0,0,0.7);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 8px; padding: 10px;
+  z-index: 10; font-size: 12px;
+}
+#leaderboard h3 {
+  text-align: center; color: #f39c12; margin-bottom: 6px; font-size: 13px;
+}
+#leaderboard-list { padding-left: 20px; }
+#leaderboard-list li { padding: 2px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+#chat {
+  position: fixed; left: 8px; bottom: 8px;
+  width: 280px; z-index: 10;
+}
+#chat-messages {
+  max-height: 160px; overflow-y: auto;
+  font-size: 12px; margin-bottom: 4px;
+  background: rgba(0,0,0,0.5);
+  border-radius: 4px; padding: 4px 6px;
+}
+.chat-msg { padding: 1px 0; word-break: break-word; }
+.chat-msg .name { color: #3498db; font-weight: bold; }
+#chat-input {
+  width: 100%; padding: 6px 8px;
+  background: rgba(0,0,0,0.6); border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 4px; color: #fff; font-size: 12px; outline: none;
+}
+#chat-input:focus { border-color: #3498db; }
+
+#minimap {
+  position: fixed; right: 8px; bottom: 8px;
+  border: 2px solid rgba(255,255,255,0.2);
+  border-radius: 4px; background: rgba(0,0,0,0.6);
+  z-index: 10;
+}
+
+#planet-panel {
+  position: fixed; left: 50%; bottom: 60px;
+  transform: translateX(-50%);
+  background: rgba(0,0,0,0.85);
+  border: 1px solid rgba(255,255,255,0.2);
+  border-radius: 10px; padding: 16px 20px;
+  z-index: 20; min-width: 300px;
+}
+#planet-panel h3 { color: #fff; margin-bottom: 8px; font-size: 16px; }
+#panel-close {
+  position: absolute; top: 8px; right: 10px;
+  background: none; border: none; color: #999; cursor: pointer; font-size: 16px;
+}
+#panel-info { font-size: 13px; margin-bottom: 8px; line-height: 1.6; }
+#panel-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.build-btn {
+  padding: 8px 14px;
+  background: rgba(52,152,219,0.2);
+  border: 1px solid #3498db; border-radius: 6px;
+  color: #fff; cursor: pointer; font-size: 12px;
+  transition: background 0.2s;
+}
+.build-btn:hover { background: rgba(52,152,219,0.4); }
+.build-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+#help-text {
+  position: fixed; bottom: 2px; left: 50%; transform: translateX(-50%);
+  color: rgba(255,255,255,0.3); font-size: 11px; z-index: 5;
+  pointer-events: none;
+}

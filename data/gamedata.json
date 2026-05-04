@@ -1,0 +1,8 @@
+{
+  "users": [],
+  "nextUserId": 1,
+  "gameState": {
+    "playerStates": {},
+    "planetOwnership": {}
+  }
+}

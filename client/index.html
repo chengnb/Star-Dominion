@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>星域争霸 · Star Dominion</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- Login overlay -->
+<div id="auth-overlay">
+  <div id="auth-box">
+    <h1>星域争霸</h1>
+    <p class="subtitle">Star Dominion — 多人实时太空策略</p>
+    <div id="auth-tabs">
+      <button class="auth-tab active" data-tab="login">登录</button>
+      <button class="auth-tab" data-tab="register">注册</button>
+    </div>
+    <form id="auth-form">
+      <input type="text" id="auth-username" placeholder="用户名" maxlength="16" autocomplete="off">
+      <input type="password" id="auth-password" placeholder="密码" maxlength="64">
+      <button type="submit" id="auth-submit">登录</button>
+    </form>
+    <p id="auth-error"></p>
+  </div>
+</div>
+
+<!-- Game UI -->
+<div id="game-ui" class="hidden">
+  <!-- Top bar -->
+  <div id="top-bar">
+    <div class="resource"><span class="res-icon">◆</span> 矿物: <span id="res-minerals">0</span></div>
+    <div class="resource"><span class="res-icon">⚡</span> 能量: <span id="res-energy">0</span></div>
+    <div class="resource"><span class="res-icon">🪐</span> 行星: <span id="res-planets">0</span></div>
+    <div id="player-name"></div>
+  </div>
+
+  <!-- Leaderboard -->
+  <div id="leaderboard">
+    <h3>排行榜</h3>
+    <ol id="leaderboard-list"></ol>
+  </div>
+
+  <!-- Chat -->
+  <div id="chat">
+    <div id="chat-messages"></div>
+    <input type="text" id="chat-input" placeholder="按 Enter 发送消息..." maxlength="200">
+  </div>
+
+  <!-- Minimap -->
+  <canvas id="minimap" width="180" height="180"></canvas>
+
+  <!-- Planet info panel -->
+  <div id="planet-panel" class="hidden">
+    <h3 id="panel-planet-name">行星</h3>
+    <div id="panel-info"></div>
+    <div id="panel-actions"></div>
+    <button id="panel-close">✕</button>
+  </div>
+
+  <!-- Help -->
+  <div id="help-text">左键拖动平移 | 滚轮缩放 | 左键选择行星 | 右键派遣舰队 | H 回母星 | 回车聊天</div>
+</div>
+
+<!-- Game canvas -->
+<canvas id="game-canvas"></canvas>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="js/main.js"></script>
+<script src="js/Game.js"></script>
+</body>
+</html>
